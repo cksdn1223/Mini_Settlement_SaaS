@@ -11,20 +11,28 @@ import java.time.LocalDate;
 @Entity
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
-//@Table(name = "contract", indexes = {
-//        @Index(name = "idx_company_id", columnList = "companyId") // 성능: 회사별 조회 속도 향상
-//})
+@Table(name = "contract", indexes = {
+        @Index(name = "idx_company_id", columnList = "companyId")
+})
+// 조회를 위해서 인덱스를 달아줌
+// 인덱스의 이름은 idx_company_id 이고 companyId 로 인덱스 조회를 함
 public class Contract {
-    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
     // 멀티테넌시: 이 데이터가 '어떤 임대관리 회사의 것인가?'
     @Column(nullable = false)
     private Long companyId;
 
-    // 임차인 정보 (원래는 Tenant 객체가 따로 있어야 하지만, 지금은 ID로 대체)
-    @Column(nullable = false)
-    private Long tenantId;
+    //    // 임차인 정보 (원래는 Tenant 객체가 따로 있어야 하지만, 지금은 ID로 대체)
+    //    @Column(nullable = false)
+    //    private Long tenantId;
+
+    // FetchType.LAZY는 "필요할 때 DB에서 조회하겠다"는 뜻 (이게 N+1의 원인)
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "tenant_id") // DB 컬럼명 매핑
+    private Tenant tenant;
 
     // 정산 및 회계: 돈은 절대 double로 쓰지 않는다. (소수점 4자리까지 허용)
     @Column(nullable = false, precision = 19, scale = 4)
@@ -42,9 +50,9 @@ public class Contract {
     private ContractStatus status;
 
     // 생성자 (빌더 패턴 대신 정적 팩토리 메서드 권장 - DDD 스타일)
-    public Contract(Long companyId, Long tenantId, BigDecimal monthlyRent, LocalDate startDate, LocalDate endDate) {
+    public Contract(Long companyId, Tenant tenant, BigDecimal monthlyRent, LocalDate startDate, LocalDate endDate) {
         this.companyId = companyId;
-        this.tenantId = tenantId;
+        this.tenant = tenant;
         this.monthlyRent = monthlyRent;
         this.startDate = startDate;
         this.endDate = endDate;
