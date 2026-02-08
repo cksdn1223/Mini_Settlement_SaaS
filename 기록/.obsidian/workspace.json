@@ -1,0 +1,188 @@
+{
+  "main": {
+    "id": "acd1954360efc052",
+    "type": "split",
+    "children": [
+      {
+        "id": "6417b5bb6e99de41",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "0fc614132b838671",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "settlement_tech_blog.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "settlement_tech_blog"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "a3c0108b4f1f4bfc",
+    "type": "split",
+    "children": [
+      {
+        "id": "bc484d3e40ff581d",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "b8e0689155f6f451",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "파일 탐색기"
+            }
+          },
+          {
+            "id": "5f9f4acabbf64fcc",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "검색"
+            }
+          },
+          {
+            "id": "9e4fddb9ecde6648",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "북마크"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "1ab5bc38fce46334",
+    "type": "split",
+    "children": [
+      {
+        "id": "fcf25f7473ac356c",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "992c0be3a5cb9d24",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "settlement_tech_blog.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "settlement_tech_blog 의 백링크"
+            }
+          },
+          {
+            "id": "3354981a3a734219",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "settlement_tech_blog.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "settlement_tech_blog 의 나가는 링크"
+            }
+          },
+          {
+            "id": "63c8d510dabb748e",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "태그"
+            }
+          },
+          {
+            "id": "2016d8e3c0a97b75",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "모든 속성"
+            }
+          },
+          {
+            "id": "9dd75e1623d122fb",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "settlement_tech_blog.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "settlement_tech_blog 의 개요"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:빠른 전환기 열기": false,
+      "graph:그래프 뷰 열기": false,
+      "canvas:새 캔버스 만들기": false,
+      "daily-notes:오늘의 일일 노트 열기": false,
+      "templates:템플릿 삽입": false,
+      "command-palette:명령어 팔레트 열기": false,
+      "bases:새 베이스 생성하기": false
+    }
+  },
+  "active": "0fc614132b838671",
+  "lastOpenFiles": []
+}
