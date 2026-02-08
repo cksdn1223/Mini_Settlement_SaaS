@@ -1,2 +1,4 @@
 FRONT/.env
 BACK/src/main/resources/application.properties
+/기록/.obsidian
+.idea
