@@ -1,304 +1,272 @@
-# [Retrospect] Spring Batch를 활용한 대용량 SaaS 임대료 정산 시스템 개발기
+# [Spring Batch] 대용량 정산 시스템
 
-> **Project Overview**
->
-> - **Topic**: 매월 1일, 10만 건 이상의 임대 계약 데이터를 처리하여 정산서(Bill)를 자동 발행하는 시스템 구축
-> - **Tech Stack**: Java 17, Spring Boot 3.x, Spring Batch 5, JPA, MySQL
-> - **Key Achievement**: 10만 건 데이터 처리 속도 최적화 (Insert 0.5초), N+1 문제 해결을 통한 쿼리 효율 99% 개선
+## 돈과 10만 건의 데이터
+
+우리가 만들 시스템은 **"임대료 정산 시스템"** 입니다.
+상황은 이렇습니다:
+
+- **매월 1일**이 되면,
+- 등록된 **10만 건의 임대 계약(Contract)** 데이터를 읽어서,
+- 이번 달 청구해야 할 **월세 고지서(Bill)**를 자동으로 발행해야 합니다.
+
+웹 서버(Controller)에서 `for`문을 돌려 처리하면 안 될까요?
+
+1. **타임아웃**: 웹 요청은 보통 30초~60초면 끊깁니다. 10만 건 처리는 그보다 오래 걸립니다.
+2. **메모리 부족(OOM)**: 10만 건을 한 번에 리스트에 담으면 서버가 뻗습니다.
+3. **재시도 불가**: 5만 건 처리하다 에러가 나면? 처음부터 다시 해야 할까요? 아니면 50001번째부터 해야 할까요? 배치는 이런 "실패 지점 관리"를 자동으로 해줍니다.
+
+그래서 우리는 **Spring Batch**를 사용합니다.
 
 ---
 
-## 1. 들어가며: 왜 정산 시스템인가?
+## Chapter 1. 도메인 설계: 돈은 소중하니까
 
-B2B 임대 관리 SaaS(Software as a Service)를 개발하며 가장 까다롭고 중요한 핵심 기능은 바로 **'돈'을 다루는 정산(Settlement) 프로세스**였습니다. 매월 1일이 되면 수많은 계약(Contract) 데이터를 바탕으로 정확한 금액의 청구서(Bill)를 발행해야 합니다.
+정산 시스템의 핵심은 **정확성**입니다. 1원의 오차도 허용하지 않는 코드를 작성해야 합니다.
 
-초기 기획 단계에서 예상되는 데이터 볼륨은 테넌트(Tenant) 당 수만 건 이상이었으며, 여러 고객사의 데이터를 동시에 처리해야 하는 **멀티테넌시(Multi-tenancy)** 환경이었습니다. 단순한 웹 요청-응답(Request-Response) 구조로는 대량의 데이터를 안정적으로 처리하기 어렵다고 판단하여 **Spring Batch**를 도입하게 되었습니다.
+### 1-1. `BigDecimal` vs `double`
 
-이 글에서는 해당 프로젝트를 진행하며 고민했던 **도메인 설계, 대량 데이터 처리 전략, 그리고 성능 문제 해결(Troubleshooting)** 과정을 상세히 공유하고자 합니다.
-
----
-
-## 2. 도메인 설계: 돈과 객체의 정합성 (DDD & Money)
-
-정산 시스템에서 가장 중요한 것은 **'금액의 정확성'**과 **'객체의 불변성'**입니다.
-
-### 2.1. `BigDecimal` vs `double`
-
-금융 데이터를 다룰 때 부동소수점(`float`, `double`) 타입을 사용하는 것은 매우 위험합니다.
-
-> **[Concept Note] 부동소수점 오차 (Floating Point Error)**
-> 컴퓨터는 실수를 0과 1로 표현하기 위해 **IEEE 754**라는 부동소수점 표준을 사용합니다. 하지만 이 방식은 `0.1 + 0.2`를 정확히 `0.3`으로 표현하지 못하고 `0.30000000000000004`와 같은 미세한 오차를 발생시킵니다.
-> 돈 계산에서 이런 1원 미만의 오차가 수만 건 누적되면 나중에는 수천 원, 수만 원의 차액이 발생하게 되므로, 금융권이나 정산 시스템에서는 절대 `double`을 사용해서는 안 됩니다.
-
-따라서 저는 **`BigDecimal`**을 도입하여 금액을 처리했습니다. 이 클래스는 내부적으로 숫자를 정수 배열로 다루기 때문에 오차 없는 정확한 사칙연산이 가능합니다. DB 스키마 설계 시에도 `precision`과 `scale`을 명시하여 소수점 처리를 엄격하게 관리했습니다.
+자바를 배울 때 실수는 `double`이라고 배웠을 겁니다. 하지만 금융 시스템에서 `double`은 금기어입니다.
 
 ```java
-// domain/Contract.java
-
-// 정산 및 회계: 돈은 절대 double로 쓰지 않는다. (소수점 4자리까지 허용)
-@Column(nullable = false, precision = 19, scale = 4)
-private BigDecimal monthlyRent; // 월세
+// ❌ 절대 금지
+double value = 0.1 + 0.2; // 결과: 0.30000000000000004
 ```
 
-### 2.2. 불완전한 객체 생성을 막는 DDD 스타일
+컴퓨터는 부동소수점(`IEEE 754`) 방식을 쓰기 때문에 미세한 오차가 발생합니다. 이게 쌓이면 몇천 원, 몇만 원이 됩니다.
+그래서 우리는 **`BigDecimal`**을 사용합니다. 이것은 숫자를 내부적으로 문자에 가까운 형태(정확히는 정수 배열)로 저장해서 100% 정확한 연산을 보장합니다.
 
-Entity 객체가 생성되는 시점에 필수 데이터가 누락된다면, 이후 로직에서 `NullPointerException` 등 런타임 예외가 발생할 위험이 큽니다. 이를 방지하기 위해 **기본 생성자의 접근을 `protected`로 막고**, 필수 값을 모두 받는 생성자를 통해서만 객체를 생성할 수 있도록 강제했습니다.
+**[Contract.java]**
 
 ```java
-// domain/Contract.java
+@Column(nullable = false, precision = 19, scale = 4)
+private BigDecimal monthlyRent;
+```
+
+- `precision = 19`: 전체 자릿수 (약 1000조 단위까지 커버)
+- `scale = 4`: 소수점 이하 자릿수. 소수점 4째 자리까지 정확하게 저장하겠다는 뜻입니다.
+
+### 1-2. 생성자 막아두기 (DDD & 불변성)
+
+객체가 "불완전한 상태"로 돌아다니는 것을 막아야 합니다.
+월세가 없는 계약서, 임차인이 없는 계약서가 존재할 수 있나요? 없어야 합니다.
+
+```java
+// [Contract.java]
 
 @Entity
 @Getter
-@NoArgsConstructor(access = AccessLevel.PROTECTED) // 무분별한 생성 방지
+@NoArgsConstructor(access = AccessLevel.PROTECTED) // 1. 기본 생성자 막기
 public class Contract {
-    // ... 필드 생략 ...
+    // ... 필드들 ...
 
-    // DDD 스타일: 정적 팩토리 메서드 혹은 생성자를 통해 정합성 보장
-    // 생성자가 호출되는 시점에 이 객체는 '완전한 상태'임이 보장된다.
-    public Contract(Long companyId, Tenant tenant, BigDecimal monthlyRent, LocalDate startDate, LocalDate endDate) {
+    // 2. 필수 값을 모두 받는 생성자 (또는 팩토리 메서드) 제공
+    public Contract(Long companyId, Tenant tenant, BigDecimal monthlyRent, ...) {
         this.companyId = companyId;
         this.tenant = tenant;
         this.monthlyRent = monthlyRent;
-        // 생성 시점부터 상태는 ACTIVE로 확정
-        this.status = ContractStatus.ACTIVE;
+        // 생성되는 순간 필수 데이터가 다 채워져 있음이 보장됨
     }
 }
 ```
 
+1. `@NoArgsConstructor(access = AccessLevel.PROTECTED)`: JPA는 기본 생성자가 필요하지만, 외부에서 개발자가 `new Contract()`로 텅 빈 객체를 만드는 실수는 막아놓습니다.
+2. 모든 필드를 받는 생성자를 통해, 객체가 생성되자마자 "완전한 상태"가 되도록 강제합니다.
+
 ---
 
-## 3. 대용량 데이터 처리: 10만 건을 0.5초 만에 넣기 (JDBC Bulk Insert)
+## Chapter 2. 데이터 준비: 10만 건을 0.5초 만에 넣는 비결
 
-성능 테스트를 위해서는 실제 운영 환경과 유사한 10만 건 이상의 더미 데이터가 필요했습니다. 처음에는 JPA의 `saveAll()`을 사용했으나, 심각한 성능 저하를 경험했습니다.
+배치를 테스트하려면 데이터가 있어야 합니다. 10만 건을 DB에 넣어봅시다.
 
-### [Problem] JPA `saveAll()`의 한계
-
-> **[Concept Note] 영속성 컨텍스트(Persistence Context)와 Dirty Checking**
-> JPA는 **'영속성 컨텍스트'**라는 1차 캐시 저장소를 둡니다. 객체를 저장(`save`)할 때 바로 DB에 쿼리를 날리는 것이 아니라, 이 캐시에 먼저 저장하고 **트랜잭션이 끝나는 시점**에 변경된 내용을 감지(**Dirty Checking**)하여 쿼리를 날립니다.
->
-> 1~2건을 다룰 때는 매우 편리하지만, **10만 건**을 `saveAll()`로 넣으려고 하면 10만 개의 객체를 모두 캐시에 올리고, 각각 변경 여부를 추적해야 하므로 **메모리와 CPU 비용(Overhead)**이 엄청나게 발생합니다.
-
-### [Solution] `JdbcTemplate` Batch Update
-
-영속성 컨텍스트를 우회하고 DB에 직접 SQL 구문을 묶어서 보내는 **JDBC 레벨의 Batch Update**를 적용했습니다. 이는 "INSERT 쿼리 1000개를 모아뒀다가 트럭 한 대에 실어서 한 번에 보내는 것"과 같습니다.
-
-#### 코드 상세 설명
+### 2-1. JPA `saveAll()`의 배신
 
 ```java
-// test/.../DataInitTest.java
+// ❌ 이렇게 하면 10만 건 넣는데 1분 넘게 걸릴 수도 있습니다.
+repository.saveAll(list);
+```
 
-// batchUpdate: 여러 개의 UPDATE/INSERT 쿼리를 한 번에 전송하는 메서드
+JPA는 데이터를 넣기 전에 **영속성 컨텍스트(1차 캐시)**에 객체를 저장합니다. 그리고 "이 객체가 변경되었나?"를 계속 감시(Dirty Checking)합니다. 10만 개를 다 캐시에 넣고 감시 비용까지 지불하니 속도가 느릴 수밖에 없습니다.
+
+### 2-2. `JdbcTemplate` Batch Update (해결사)
+
+캐시고 뭐고 다 건너뛰고, "INSERT 쿼리 문자열"만 만들어서 DB에 바로 쏘는 **JDBC 레벨의 기술**을 사용합니다.
+
+**[DataInitTest.java]**
+
+```java
+String sql = "INSERT INTO contract (company_id, ..., monthly_rent) VALUES (?, ..., ?)";
+
 jdbcTemplate.batchUpdate(sql, new BatchPreparedStatementSetter() {
 
-    // 1. 값 세팅 (PreparedStatement)
-    // 이 메서드는 getBatchSize()만큼 반복 호출됩니다.
-    // 'i'는 현재 반복 횟수(인덱스)입니다.
+    // 이 메서드는 10만 번 호출됩니다 (i = 0 ~ 99999)
     @Override
     public void setValues(PreparedStatement ps, int i) throws SQLException {
-        // ps: 실제 SQL 쿼리에 값을 채워넣는 객체
-        // 쿼리의 ? 위치에 값을 넣습니다. (파라미터 바인딩)
-        ps.setLong(1, companyId);
-        ps.setBigDecimal(3, new BigDecimal(rentAmount));
-        // ... (생략)
+        // SQL의 '?' 구멍에 값을 채워넣는 과정
+        ps.setLong(1, randomCompanyId);
+        ps.setLong(2, tenantId);
+        ps.setBigDecimal(3, rentAmount);
     }
 
-    // 2. 배치 크기 결정
-    // 총 몇 번 쿼리를 모아서 보낼지 결정합니다. 여기서는 100,000건입니다.
+    // "총 몇 개 보낼 거야?"
     @Override
     public int getBatchSize() {
-        return 100_000; // 10만 건을 한 번의 배치(네트워크 요청)로 전송
+        return 100_000; // 10만 개!
     }
 });
 ```
 
-- `BatchPreparedStatementSetter`: 배치 처리를 위해 각 쿼리의 파라미터를 설정하는 콜백 인터페이스입니다.
-- **결과**: 10만 건의 데이터를 Insert 하는 데 **약 0.5초**밖에 걸리지 않았습니다. JPA를 고집하지 않고 기술의 특징에 맞춰 적절한 도구(`JdbcTemplate`)를 선택한 결과입니다.
+이 방식은 INSERT 쿼리를 하나씩 DB에 날리는 게 아니라, 메모리에 쿼리를 쭉 쌓아뒀다가 **트럭 한 대에 실어서 한 번에** 보냅니다 (Batch Size 만큼).
+결과적으로 제 로컬 PC 기준 **0.5초 ~ 1초** 만에 10만 건이 들어갑니다.
 
 ---
 
-## 4. Spring Batch 아키텍처 및 구현
+## Chapter 3. 배치 아키텍처: 공장 조립 라인 만들기
 
-대용량 정산 처리는 메모리 부하를 방지하기 위해 **Chunk 지향 처리(Chunk-oriented Processing)** 방식을 채택했습니다.
+Spring Batch가 어렵게 느껴진다면 **"거대한 공장"**을 상상해보세요.
 
-### [Concept Note] Spring Batch 구조 이해하기
+### 3-1. Job와 Step: 공장과 조립 라인
 
-Spring Batch는 대용량 처리를 위해 **Reader(읽기) -> Processor(가공) -> Writer(쓰기)** 라는 3단계 파이프라인 구조를 가집니다.
+- **Job (일감)**: "이번 달 정산하기"라는 하나의 거대한 작업 목표입니다.
+- **Step (단계)**: Job을 구성하는 세부 단계입니다. (예: 1단계-데이터 읽기, 2단계-계산하기, 3단계-저장하기)
 
-1.  **ItemReader**: DB나 파일에서 데이터를 **'읽어옵니다'**. 한 번에 다 가져오지 않고, 지정한 크기(Chunk)만큼 끊어서 가져옵니다. (ex: 계약서 1000장 꺼내기)
-2.  **ItemProcessor**: 읽어온 데이터를 비즈니스 로직에 따라 **'가공합니다'**. (ex: 계약서 정보를 보고 이번 달 월세 청구서 계산하기)
-3.  **ItemWriter**: 가공 완료된 데이터를 **'저장합니다'**. (ex: 계산된 청구서를 DB에 저장하기)
-
-**Chunk 지향 처리란?**
-데이터를 1건씩 처리하고 저장하면 DB 커넥션을 너무 많이 맺고 끊습니다. 반대로 10만 건을 한 번에 처리하면 메모리가 터집니다.
-Chunk 방식은 **"1000개 모일 때까지는 메모리에 쌓아두고 처리하다가, 1000개가 차면 딱 한 번 DB에 커밋(저장)"** 하는 방식입니다. 이를 통해 **메모리 효율**과 **트랜잭션 성능** 두 마리 토끼를 잡을 수 있습니다.
-
-### 4.1. Job 프로세스 구현
+우리의 `billJob`은 단 하나의 `billStep`으로 이루어져 있습니다.
 
 ```java
-// batch/BillGenerateJobConfig.java
-
 @Bean
-public Step billStep(JpaPagingItemReader<Contract> contractReader) {
-    return new StepBuilder("billStep", jobRepository)
-            // <입력타입, 출력타입>chunk(사이즈, 트랜잭션매니저)
-            .<Contract, Bill>chunk(1000, transactionManager)
-            .reader(contractReader)      // 1. 읽기
-            .processor(billProcessor())  // 2. 가공
-            .writer(billWriter())        // 3. 쓰기
+public Job billJob(Step billStep) {
+    return new JobBuilder("billJob", jobRepository)
+            .start(billStep) // "정산 작업 시작!"
             .build();
 }
 ```
 
-- **`<Contract, Bill>chunk(1000, ...)`**: Contract 객체를 읽어서 Bill 객체로 변환하며, 1000개가 모이면 DB에 반영(Connect/Commit)하겠다는 뜻입니다.
+### 3-2. 핵심 3요소 (Reader, Processor, Writer)
 
-Writer 부분에서도 `JdbcBatchItemWriter`를 사용했습니다. 이는 앞서 살펴본 Bulk Insert와 마찬가지로, 생성된 1000개의 Bill 객체를 `INSERT` 쿼리 한 방으로 묶어서 DB에 쏘는 역할을 합니다.
+Step 내부에서는 **3명의 전문 일꾼**이 분업을 합니다.
 
----
+1. **ItemReader (공급 담당)**: 창고(DB)에서 원자재(Contract)를 꺼내옵니다.
+2. **ItemProcessor (가공 담당)**: 원자재를 다듬어서 완제품(Bill)으로 만듭니다.
+3. **ItemWriter (납품 담당)**: 완제품을 포장해서 창고(DB)에 다시 넣습니다.
 
-## 5. [Core] 성능 최적화: N+1 문제 해결 (Troubleshooting)
+### 3-3. Chunk 지향 처리: 트럭에 실어 나르기
 
-개발 과정에서 가장 큰 성능 이슈는 **N+1 문제**였습니다. 이는 ORM(JPA)을 사용할 때 발생할 수 있는 가장 흔하면서도 치명적인 성능 문제입니다.
+데이터가 10만 개인데 하나 만들고 DB에 넣고, 하나 만들고 DB에 넣으면 시간이 너무 오래 걸립니다. (택배 기사님이 상자 하나 들고 배송하고 다시 물류센터 오는 꼴)
 
-### [Problem] 1000건 조회 시 쿼리가 1001번 나가는 현상
-
-> **[Concept Note] N+1 문제와 지연 로딩(Lazy Loading)**
-> JPA에서 연관된 객체(예: `계약` -> `임차인`)를 조회할 때, 당장 필요 없는 임차인 정보는 가짜 객체(Proxy)로 채워둡니다. 이를 **지연 로딩(Lazy Loading)**이라고 합니다.
-> 하지만 이후 로직에서 `contract.getTenant().getName()` 처럼 실제 임차인 정보에 접근하는 순간, JPA는 그제서야 DB에 다시 SELECT 쿼리를 날립니다.
->
-> 1. `Contracts` 1000개를 가져오는 쿼리 **1번 (1)**
-> 2. 각 `Contract`마다 `Tenant`를 조회하는 쿼리 **1000번 (N)**
->
-> 결과적으로 **1 + N** 번의 쿼리가 발생하여 DB에 엄청난 부하를 주게 됩니다.
-
-**실제 로그 상황 (Hell of N+1):**
-
-```text
-Hibernate: select ... from contract ... limit 1000; (최초 조회 1번)
-Hibernate: select ... from tenant where id=1 (1번째 계약의 임차인 조회)
-Hibernate: select ... from tenant where id=2 (2번째 계약의 임차인 조회)
-...
-Hibernate: select ... from tenant where id=1000 (1000번째 계약의 임차인 조회)
-```
-
-10만 건을 처리한다면 조회 쿼리만 10만 1번이 실행되어, DB 커넥션 풀이 마르고 전체 시스템이 마비될 수 있는 심각한 문제였습니다.
-
-### [Solution] `JOIN FETCH` 적용
-
-이를 해결하기 위해 `JpaPagingItemReader`의 쿼리(JPQL)에 **`JOIN FETCH`**를 적용했습니다.
-
-> **[Concept Note] JOIN FETCH란?**
-> 일반적인 `JOIN`은 연관된 데이터를 필터링하는 용도라면, `JOIN FETCH`는 **"연관된 엔티티까지 진짜로 다 채워서(Fetch) 가져오라"**는 명령어입니다. DB에서 데이터를 가져올 때 아예 `Contract`와 `Tenant`를 합쳐서 가져오기 때문에, 나중에 `Tenant`를 조회해도 추가 쿼리가 나가지 않습니다.
+그래서 **Chunk(덩어리)** 개념을 씁니다.
+"1000개 모일 때까지 기다렸다가, 1000개가 차면 **한 번에** 처리하자!"
 
 ```java
-// batch/BillGenerateJobConfig.java
+// [BillGenerateJobConfig.java]
 
-return new JpaPagingItemReaderBuilder<Contract>()
-        .name("contractReader")
-        .entityManagerFactory(entityManagerFactory)
-        // [Key Point] JOIN FETCH로 한 번에 당겨온다 (Lazy Loading 무력화)
-        .queryString("SELECT c FROM Contract c JOIN FETCH c.tenant WHERE c.status = 'ACTIVE' AND c.companyId = :companyId")
-        .pageSize(1000)
+return new StepBuilder("billStep", jobRepository)
+        // <입력, 출력>chunk(사이즈, 트랜잭션매니저)
+        .<Contract, Bill>chunk(1000, transactionManager)
+        .reader(contractReader)
+        .processor(processor)
+        .writer(writer)
         .build();
 ```
 
-- **Before**: Contract 조회 1회 + Tenant 조회 1000회 (총 1001회)
-- **After**: **Contract + Tenant 함께 조회 1회** (총 1회)
-- **결과**: 쿼리 수가 1/1000 이상으로 감소하며 배치 수행 속도가 획기적으로 개선되었습니다.
+- **메모리 보호**: 10만 개를 다 메모리에 올리지 않고 1000개만 올립니다.
+- **트랜잭션 효율**: 10만 번 커밋하지 않고 100번만 커밋합니다. (속도 향상 핵심)
 
 ---
 
-## 6. 멀티테넌시(Multi-tenancy) 지원과 데이터 격리
+## Chapter 4. 멀티테넌시: 내 데이터는 내가 지킨다
 
-SaaS 솔루션 특성상 하나의 DB에 A사, B사, C사의 데이터가 섞여 있습니다. A사의 정산 배치 작업이 B사의 데이터를 건드리면 대형 사고가 발생합니다. 즉, **데이터 격리(Data Isolation)**가 필수적입니다.
+우리 서비스는 SaaS입니다. 삼성전자 데이터 정산하는데 LG전자 데이터가 딸려오면 큰일 납니다.
+Job을 실행할 때 외부에서 `companyId`를 받아서 필터링해야 합니다.
 
-### 6.1. Job Parameter를 이용한 필터링
+### 4-1. Job Parameter와 `@StepScope`: 타이밍의 마법
 
-가장 확실한 방법은 배치를 실행할 때 "어떤 회사의 작업을 할 것인가?"를 명시적으로 주입하는 것입니다. 이를 **Job Parameter**라고 합니다.
+"배치 돌릴 때 어떤 회사 건지 알려줄게!" 라고 외부에서 값을 주입받는 것을 **Job Parameter**라고 합니다.
+그런데 이걸 받으려면 **`@StepScope`**라는 특별한 설정이 필요합니다.
 
 ```java
-// batch/BillGenerateJobConfig.java
-
 @Bean
-@StepScope // Scope 설정 (매우 중요)
+@StepScope // ✨ "지연 생성"의 마법
 public JpaPagingItemReader<Contract> contractReader(
-        @Value("#{jobParameters['companyId']}") Long companyId // 1. 파라미터 주입
-) {
-    if (companyId == null) {
-        // ... 예외 처리 ...
-    }
+        @Value("#{jobParameters['companyId']}") Long companyId // 실행 시점에 주입됨
+) { ... }
+```
 
-    return new JpaPagingItemReaderBuilder<Contract>()
-            // ...
-            // 2. 쿼리에 파라미터 바인딩 (WHERE c.companyId = :companyId)
-            // 이를 통해 DB 레벨에서 타 회사의 데이터를 원천 배제합니다.
-            .parameterValues(Collections.singletonMap("companyId", companyId))
+**[Why?] 왜 `@StepScope`가 필수인가요?**
+
+- 일반적인 Spring Bean은 **앱 서버가 켜질 때(로딩 시점)** 다 만들어집니다.
+- 하지만 `companyId`는 **Job을 실행하는 순간(런타임)**에 비로소 알 수 있습니다.
+- `@StepScope`를 붙이면, Bean 생성을 **"Step이 실제로 실행될 때까지" 미룹니다(Late Binding).** 덕분에 실행 시점에 파라미터를 받아서 Reader를 만들 수 있게 됩니다.
+
+---
+
+## Chapter 5. 성능 최적화: N+1 지옥 탈출
+
+ORM(JPA)을 쓸 때 가장 조심해야 할 문제입니다.
+
+### 5-1. 문제 상황 (Lazy Loading)
+
+`Contract` 안에는 `Tenant`(임차인) 정보가 있습니다.
+
+```java
+@ManyToOne(fetch = FetchType.LAZY)
+private Tenant tenant;
+```
+
+`FetchType.LAZY`는 "진짜 필요할 때 DB에서 가져오겠다"는 뜻입니다.
+
+1. `Contract` 1000개를 읽음 (쿼리 1방)
+2. 첫 번째 `Contract`의 `tenant.getName()`을 호출함 -> DB 조회 (쿼리 1방)
+3. 두 번째 ... (쿼리 1방)
+   ...
+   결국 **1 + 1000 = 1001번**의 쿼리가 나갑니다. 이를 **N+1 문제**라고 합니다.
+
+### 5-2. 해결책: `JOIN FETCH`
+
+"야, Contract 가져올 때 Tenant도 그냥 같이 옆구리에 끼워서 가져와." 라고 명령하는 것입니다.
+
+**[BillGenerateJobConfig.java]**
+
+```java
+// BEFORE: SELECT c FROM Contract c WHERE ...
+// AFTER
+.queryString("SELECT c FROM Contract c JOIN FETCH c.tenant WHERE ...")
+```
+
+`JOIN FETCH` 한 단어 추가로, 쿼리는 단 **1방**으로 줄어듭니다.
+데이터가 10만 건이면 100,001번 쿼리가 100번(Chunk size 1000 기준)으로 줄어드는 기적을 볼 수 있습니다.
+
+---
+
+## Chapter 6. 쓰기 최적화: 마지막 병목 뚫기
+
+읽기(Reader)를 튜닝했다면, 이제 쓰기(Writer)입니다. 여기서도 **JPA를 버리고 JDBC를 선택**했습니다.
+
+### 6-1. 심플한 게 최고다 (`JdbcBatchItemWriter`)
+
+```java
+@Bean
+public JdbcBatchItemWriter<Bill> billWriter() {
+    return new JdbcBatchItemWriterBuilder<Bill>()
+            .dataSource(dataSource)
+            // SQL을 직접 작성 (묻지도 따지지도 않고 바로 꽂는다)
+            .sql("INSERT INTO bill (company_id, ..., amount) VALUES (:companyId, ..., :amount)")
+            .beanMapped() // Bill 객체의 필드명과 SQL 파라미터(:names) 자동 매핑
             .build();
 }
 ```
 
-### 6.2. @StepScope와 Late Binding
+**[Why?] 왜 JPA(`JpaItemWriter`)가 아닌가?**
 
-여기서 중요한 기술 포인트는 `@StepScope`입니다.
-
-- **문제**: Spring Bean은 보통 애플리케이션 실행 시점(서버 켤 때)에 생성됩니다. 하지만 `companyId`는 **Job을 실행하는 시점**에 결정됩니다. 서버 켤 때는 `companyId`가 뭔지 모릅니다.
-- **해결**: `@StepScope`를 붙이면, Bean의 생성을 **"실제 배치 단계(Step)가 시작될 때"**까지 지연시킵니다(**Late Binding**). 덕분에 실행 시점에 들어온 파라미터를 받아서 동적인 쿼리를 만들 수 있습니다.
+- **JPA**: 너무 똑똑합니다. "이거 저장하면 기존 데이터랑 충돌 안 나나?", "영속성 컨텍스트에 넣어야지" 등등 따지는 게 많아서 **대량 입력 시 느립니다.** (특히 `Identity` 전략 사용 시 Bulk Insert 불가)
+- **JDBC**: 단순 무식합니다. "그냥 DB에 꽂아!" 하고 바로 밀어 넣습니다. **대용량 처리에는 이렇게 "생각 없는 친구"가 훨씬 빠릅니다.**
 
 ---
 
-## 7. 신뢰성 있는 배치를 위한 테스트 전략 (Testing)
+## 마무리
 
-배치 프로세스는 시스템의 중요한 데이터를 대량으로 변경하기 때문에, 버그가 발생하면 그 파급력이 엄청납니다 (예: 10만 명에게 요금 폭탄 청구서 발송). 따라서 꼼꼼한 테스트가 필수입니다.
+이 시스템은 단순히 "돌아가는 코드"가 아니라, **"커지는 데이터에도 버티는 코드"**를 고민한 결과입니다.
 
-### 7.1. @SpringBatchTest
+1. **정합성**: `BigDecimal`과 생성자 제약
+2. **속도**: `Bulk Insert`와 `Chunk` 처리
+3. **효율**: `N+1` 문제 해결
 
-스프링 배치는 테스트를 위한 전용 어노테이션인 `@SpringBatchTest`를 제공합니다. 이를 사용하면 복잡한 배치 환경을 쉽게 구축하여 테스트할 수 있습니다.
-
-```java
-// test/.../BillJobTest.java
-
-@SpringBatchTest
-@SpringBootTest(classes = {BillGenerateJobConfig.class, ...})
-class BillJobTest {
-
-    @Autowired
-    private JobLauncherTestUtils jobLauncherTestUtils; // Job 실행 도구
-
-    @Test
-    @DisplayName("청구서 발행 배치 실행 테스트")
-    void runBillJob() throws Exception {
-        // given: 테스트 환경 설정
-        // Job 실행 시 필요한 파라미터(companyId)를 설정합니다.
-        JobParameters jobParameters = new JobParametersBuilder()
-                .addLong("companyId", 1L)
-                .addLong("time", System.currentTimeMillis())
-                .toJobParameters();
-
-        // when: 배치 실행
-        // 실제 Job을 실행시킵니다.
-        JobExecution jobExecution = jobLauncherTestUtils.launchJob(jobParameters);
-
-        // then: 검증
-        // 1. 배치가 정상적으로 끝났는지 확인 (COMPLETED)
-        assertThat(jobExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
-
-        // 2. DB에 청구서가 올바르게 생성되었는지 별도 조회 검증 필요
-        // (예: BillRepository.count() == 예측값)
-    }
-}
-```
-
-이 테스트를 통해 배치가 예외 없이 끝까지 도는지, 파라미터는 잘 먹히는지, 결과 데이터는 정합한지를 배포 전에 확실하게 검증할 수 있습니다.
-
----
-
-## 8. 마치며
-
-이번 프로젝트를 통해 단순한 기능 구현을 넘어 **"데이터의 규모가 커질 때 시스템이 어떻게 반응하는가"**를 깊이 있게 고민해볼 수 있었습니다.
-
-1.  **JDBC Bulk Insert**로 대량 데이터의 입력을 최적화했고,
-2.  **Spring Batch**의 Chunk 모델로 메모리 사용량을 예측 가능하게 설계했으며,
-3.  **Fetch Join**으로 ORM 사용 시 발생할 수 있는 치명적인 성능 병목을 해결했습니다.
-
-이러한 경험은 앞으로 더 복잡하고 거대한 트래픽을 처리하는 백엔드 시스템을 설계하는 데 있어 단단한 초석이 될 것입니다.
-
----
+이 세 가지 원칙만 기억한다면, 100만 건, 1000만 건의 데이터도 두렵지 않을 것입니다.

@@ -183,6 +183,14 @@
       "bases:새 베이스 생성하기": false
     }
   },
-  "active": "0fc614132b838671",
-  "lastOpenFiles": []
+  "active": "b8e0689155f6f451",
+  "lastOpenFiles": [
+    "study_06_testing.md",
+    "study_05_jpa_deep.md",
+    "study_04_spring_batch_deep.md",
+    "study_03_db_design.md",
+    "study_02_multi_tenancy.md",
+    "study_01_domain_modeling.md",
+    "settlement_system_master_guide.md"
+  ]
 }

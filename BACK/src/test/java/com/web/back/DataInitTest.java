@@ -22,7 +22,6 @@ public class DataInitTest {
     @Test
     @DisplayName("테넌트 데이터 10만 개 넣기")
     void initTenant() {
-        // Contract에 tenant_id 1~100,000이 들어있으니, Tenant도 똑같이 10만 개 만들어야 매칭됨
         final int TOTAL_COUNT = 100_000;
         String sql = "INSERT INTO tenant (name, email) VALUES (?, ?)";
 
